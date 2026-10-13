@@ -1,0 +1,6 @@
+{
+  "name": "SLSU-Hinunangan Extension Services Evaluation System with Data Analytics",
+  "description": "Mobile-responsive extension services evaluation platform with adaptive forms, online/offline sync, sentiment & topic analytics, and AI-assisted executive reports for SLSU-Hinunangan Campus.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
