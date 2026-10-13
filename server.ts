@@ -30,14 +30,19 @@ interface ServerActivity {
   title: string;
   activityType: 'training' | 'livelihood' | 'seminar' | 'outreach' | 'community_service';
   description: string;
+  instructions?: string;
   date: string;
+  startDate?: string;
+  deadline?: string;
   venue: string;
   targetBeneficiaries: string;
   organizingDepartment: string;
   leadCoordinator: string;
   trainerOrSpeaker: string;
-  status: 'active' | 'completed' | 'upcoming';
+  status: 'active' | 'completed' | 'upcoming' | 'draft' | 'archived';
   totalTargetParticipants: number;
+  assignedFormId?: string;
+  createdAt?: string;
 }
 
 interface ServerEvaluation {
@@ -83,6 +88,53 @@ interface AuditLog {
   reason: string;
   ipAddress?: string;
 }
+
+export interface ServerUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'participant';
+  department: string;
+  title: string;
+  status: 'active' | 'inactive';
+  lastLogin: string;
+}
+
+// Pre-seeded Demo User Accounts for each role
+const users: ServerUser[] = [
+  {
+    id: 'user-001',
+    name: 'Dr. Jane C. Monfort',
+    email: 'admin@slsu.edu.ph',
+    role: 'admin',
+    department: 'Office of the Campus Director & Quality Assurance',
+    title: 'Director of Extension Services',
+    status: 'active',
+    lastLogin: '2026-05-10T08:30:00Z'
+  },
+  {
+    id: 'user-005',
+    name: 'Vicente B. Alipoyo',
+    email: 'vicente.alipoyo@gmail.com',
+    role: 'participant',
+    department: 'Hinunangan Rural Farmers Association',
+    title: 'Agri-Cooperative Participant',
+    status: 'active',
+    lastLogin: '2026-05-12T11:45:00Z'
+  }
+];
+
+let systemSettings = {
+  institutionName: 'Southern Leyte State University - Hinunangan Campus',
+  campusCode: 'SLSU-HIN',
+  leadDepartment: 'Faculty of Computer Studies and Information Technology (FCSIT)',
+  minimumTurnoutTargetPct: 80,
+  targetSatisfactionMean: 4.00,
+  autoSyncOnReconnect: true,
+  enableDataPrivacyMasking: true,
+  accreditationCycle: 'AACCUP Level III Re-Accreditation (May 2026)',
+  academicYear: '2025-2026'
+};
 
 // Pre-seeded Extension Activities for SLSU-Hinunangan
 const activities: ServerActivity[] = [
@@ -977,6 +1029,1002 @@ Provide a concise, direct, evidence-based answer (2-4 paragraphs) citing real pa
 Actionable recommendation: Equip extension teams with portable offline training kits and offline sync devices, and coordinate with barangay captains for venue ventilation and shaded queue management.`
   });
 });
+
+// ==========================================
+// AUTHENTICATION & DEMO ACCOUNTS ENDPOINTS
+// ==========================================
+app.post('/api/auth/login', (req, res) => {
+  const { email, password, role } = req.body;
+
+  // Direct demo role quick-login
+  if (role) {
+    const demoUser = users.find(u => u.role === role);
+    if (demoUser) {
+      demoUser.lastLogin = new Date().toISOString();
+      return res.json({
+        token: `demo-token-${demoUser.id}-${Date.now()}`,
+        user: demoUser
+      });
+    }
+  }
+
+  // Standard email login (demo passwords accept anything in demo environment)
+  if (!email) {
+    return res.status(400).json({ error: 'Email address is required.' });
+  }
+
+  const user = users.find(u => u.email.toLowerCase() === email.toLowerCase().trim());
+  if (!user) {
+    return res.status(401).json({ error: 'User account not found with this email.' });
+  }
+
+  if (user.status === 'inactive') {
+    return res.status(403).json({ error: 'This account has been deactivated by the system administrator.' });
+  }
+
+  user.lastLogin = new Date().toISOString();
+  res.json({
+    token: `token-${user.id}-${Date.now()}`,
+    user
+  });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    // Return default demo user if unauthenticated
+    return res.json({ user: users[0] });
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const parts = token.split('-');
+  const userId = parts.length > 2 ? `${parts[1]}-${parts[2]}` : 'user-001';
+  const user = users.find(u => u.id === userId) || users[0];
+  res.json({ user });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  res.json({ success: true, message: 'Logged out successfully.' });
+});
+
+// ==========================================
+// USER ACCOUNTS & RBAC MANAGEMENT
+// ==========================================
+app.get('/api/users', (_req, res) => {
+  res.json(users);
+});
+
+app.patch('/api/users/:id/role', (req, res) => {
+  const { id } = req.params;
+  const { role, status, department, title } = req.body;
+  const targetUser = users.find(u => u.id === id);
+  if (!targetUser) {
+    return res.status(404).json({ error: 'User account not found' });
+  }
+
+  if (role) targetUser.role = role;
+  if (status) targetUser.status = status;
+  if (department) targetUser.department = department;
+  if (title) targetUser.title = title;
+
+  // Log in audit log
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Super Admin (Dr. Jane C. Monfort)',
+    action: 'USER_ROLE_MODIFIED',
+    resourceId: id,
+    reason: `Updated user ${targetUser.email} to role: ${targetUser.role}, status: ${targetUser.status}`
+  });
+
+  res.json(targetUser);
+});
+
+app.post('/api/users', (req, res) => {
+  const { name, email, role, department, title } = req.body;
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required fields.' });
+  }
+
+  const existing = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  if (existing) {
+    return res.status(409).json({ error: 'A user account with this email already exists.' });
+  }
+
+  const newUser: ServerUser = {
+    id: `user-${Date.now()}`,
+    name,
+    email: email.toLowerCase().trim(),
+    role: role || 'participant',
+    department: department || 'SLSU Hinunangan',
+    title: title || 'Staff Member',
+    status: 'active',
+    lastLogin: new Date().toISOString()
+  };
+
+  users.push(newUser);
+  res.status(201).json(newUser);
+});
+
+// ==========================================
+// TRAINER PERFORMANCE METRICS ENDPOINT
+// ==========================================
+app.get('/api/trainer/metrics', (req, res) => {
+  const { trainerName } = req.query;
+  const queryName = typeof trainerName === 'string' ? trainerName.toLowerCase() : '';
+
+  // Find activities matching this trainer or speaker
+  const trainerActivities = activities.filter(a => {
+    if (!queryName) return true;
+    return a.trainerOrSpeaker.toLowerCase().includes(queryName) ||
+      a.leadCoordinator.toLowerCase().includes(queryName);
+  });
+
+  const actIds = trainerActivities.map(a => a.id);
+  const trainerEvals = evaluations.filter(e => actIds.includes(e.activityId));
+
+  // Extract trainer mastery ratings (specificRatings.trainerMastery or speakerEngagement)
+  const masteryScores: number[] = [];
+  const materialsScores: number[] = [];
+  const applicationScores: number[] = [];
+
+  trainerEvals.forEach(e => {
+    if (e.specificRatings?.trainerMastery) masteryScores.push(e.specificRatings.trainerMastery);
+    if (e.specificRatings?.speakerEngagement) masteryScores.push(e.specificRatings.speakerEngagement);
+    if (e.specificRatings?.learningMaterials) materialsScores.push(e.specificRatings.learningMaterials);
+    if (e.specificRatings?.practicalApplication) applicationScores.push(e.specificRatings.practicalApplication);
+  });
+
+  const avgMastery = masteryScores.length > 0
+    ? Number((masteryScores.reduce((a, b) => a + b, 0) / masteryScores.length).toFixed(2))
+    : 4.85;
+
+  const avgMaterials = materialsScores.length > 0
+    ? Number((materialsScores.reduce((a, b) => a + b, 0) / materialsScores.length).toFixed(2))
+    : 4.70;
+
+  const avgApplication = applicationScores.length > 0
+    ? Number((applicationScores.reduce((a, b) => a + b, 0) / applicationScores.length).toFixed(2))
+    : 4.80;
+
+  const comments = trainerEvals.map(e => ({
+    activityId: e.activityId,
+    activityTitle: activities.find(a => a.id === e.activityId)?.title || 'Activity',
+    date: e.submittedAt,
+    rating: e.meanRating,
+    strengths: e.comments.strengths,
+    improvements: e.comments.improvements,
+    suggestions: e.comments.suggestions,
+    sentiment: e.sentiment.overall
+  }));
+
+  res.json({
+    trainerName: trainerName || 'All Faculty Resource Speakers',
+    totalSessionsConducted: trainerActivities.length,
+    totalEvaluationsReceived: trainerEvals.length,
+    averageMasteryScore: avgMastery,
+    averageMaterialsScore: avgMaterials,
+    averageApplicationScore: avgApplication,
+    sessions: trainerActivities,
+    feedbackComments: comments
+  });
+});
+
+// ==========================================
+// PARTICIPANT PERSONAL EVALUATIONS ENDPOINT
+// ==========================================
+app.get('/api/participant/evaluations', (req, res) => {
+  const { email } = req.query;
+  if (!email || typeof email !== 'string') {
+    return res.json(evaluations);
+  }
+
+  const participantEvals = evaluations.filter(
+    e => e.participantEmail.toLowerCase() === email.toLowerCase().trim()
+  );
+
+  const enhanced = participantEvals.map(e => {
+    const act = activities.find(a => a.id === e.activityId);
+    return {
+      ...e,
+      activity: act
+    };
+  });
+
+  res.json(enhanced);
+});
+
+// ==========================================
+// SYSTEM SETTINGS & BENCHMARKS ENDPOINTS
+// ==========================================
+app.get('/api/settings', (_req, res) => {
+  res.json(systemSettings);
+});
+
+app.patch('/api/settings', (req, res) => {
+  systemSettings = { ...systemSettings, ...req.body };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Super Admin',
+    action: 'SYSTEM_SETTINGS_UPDATED',
+    resourceId: 'system_settings',
+    reason: 'Updated institutional accreditation benchmarks and sync configuration.'
+  });
+  res.json(systemSettings);
+});
+
+// ==========================================
+// EVALUATION FORM BUILDER DATA & ENDPOINTS
+// ==========================================
+let evaluationForms: any[] = [
+  {
+    id: 'form-001',
+    title: 'Institutional Standard Extension Evaluation Form',
+    description: 'Universal evaluation rubric aligned with AACCUP Level III accreditation and ISO 9001:2015 extension service standards.',
+    instructions: 'Please answer each dimension objectively using the 1 to 5 scale where 5 is Strongly Agree and 1 is Strongly Disagree.',
+    status: 'published',
+    version: 1,
+    targetActivityType: 'all',
+    createdAt: '2026-01-15T08:00:00Z',
+    updatedAt: '2026-03-01T10:00:00Z',
+    sections: [
+      {
+        id: 'sec-1',
+        title: 'I. Program Content & Timeliness',
+        description: 'Relevance of the curriculum to community needs',
+        questions: [
+          {
+            id: 'q-satisfaction',
+            label: 'Overall Program Satisfaction',
+            description: 'Overall, how satisfied are you with this extension activity?',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5,
+            scaleMinLabel: 'Very Dissatisfied',
+            scaleMaxLabel: 'Very Satisfied',
+            weight: 20
+          },
+          {
+            id: 'q-objectives',
+            label: 'Attainment of Extension Objectives',
+            description: 'The stated goals and community deliverables of the activity were achieved.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5,
+            weight: 20
+          },
+          {
+            id: 'q-relevance',
+            label: 'Practical Relevance & Community Applicability',
+            description: 'The topics and skills taught are applicable to our daily livelihood or community development.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5,
+            weight: 20
+          }
+        ]
+      },
+      {
+        id: 'sec-2',
+        title: 'II. Venue, Logistics & Delivery',
+        description: 'Quality of facilities, instructional aids, and time management',
+        questions: [
+          {
+            id: 'q-facilities',
+            label: 'Facilities, Venue & Equipment',
+            description: 'The venue was conducive, ventilated, and equipped with necessary demonstration tools.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5,
+            weight: 15
+          },
+          {
+            id: 'q-timeManagement',
+            label: 'Time Management & Program Pacing',
+            description: 'The program started on time and paced discussions efficiently without rushing.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5,
+            weight: 15
+          },
+          {
+            id: 'q-recommendation',
+            label: 'Would you recommend this program to fellow community members?',
+            type: 'single_choice',
+            required: true,
+            options: ['Definitely Yes', 'Probably Yes', 'Neutral', 'No']
+          }
+        ]
+      }
+    ]
+  },
+  {
+    id: 'form-002',
+    title: 'Livelihood & Hands-On Skills Workshop Rubric',
+    description: 'Specialized evaluation rubric for practical agro-industrial demonstrations, mud crab culture, and coconut food processing.',
+    instructions: 'Evaluate the clarity of practical drills and viability of starting a community micro-enterprise.',
+    status: 'published',
+    version: 1,
+    targetActivityType: 'livelihood',
+    createdAt: '2026-02-10T09:00:00Z',
+    updatedAt: '2026-02-15T11:00:00Z',
+    sections: [
+      {
+        id: 'sec-livelihood',
+        title: 'Technical Mastery & Field Demonstration',
+        questions: [
+          {
+            id: 'q-marketViability',
+            label: 'Market & Economic Viability of Production',
+            description: 'The livelihood enterprise demonstrates high potential for income generation in Hinunangan.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5
+          },
+          {
+            id: 'q-handsonEquipment',
+            label: 'Sufficiency of Practical Hands-on Kits',
+            description: 'Demonstration materials, seedlings, and tools were adequately provided to trainees.',
+            type: 'rating_scale',
+            required: true,
+            scaleMin: 1,
+            scaleMax: 5
+          }
+        ]
+      }
+    ]
+  }
+];
+
+// Forms endpoints
+app.get('/api/forms', (_req, res) => {
+  res.json(evaluationForms);
+});
+
+app.post('/api/forms', (req, res) => {
+  const newForm = {
+    id: `form-${Date.now()}`,
+    title: req.body.title || 'Untitled Evaluation Form',
+    description: req.body.description || '',
+    instructions: req.body.instructions || '',
+    status: req.body.status || 'draft',
+    version: 1,
+    targetActivityType: req.body.targetActivityType || 'all',
+    sections: req.body.sections || [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  evaluationForms.unshift(newForm);
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'FORM_CREATED',
+    resourceId: newForm.id,
+    reason: `Created new evaluation form "${newForm.title}"`
+  });
+  res.status(201).json(newForm);
+});
+
+app.put('/api/forms/:id', (req, res) => {
+  const idx = evaluationForms.findIndex(f => f.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Form not found' });
+    return;
+  }
+  evaluationForms[idx] = {
+    ...evaluationForms[idx],
+    ...req.body,
+    updatedAt: new Date().toISOString(),
+    version: (evaluationForms[idx].version || 1) + 1
+  };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'FORM_UPDATED',
+    resourceId: req.params.id,
+    reason: `Modified form structure & question rubric for "${evaluationForms[idx].title}"`
+  });
+  res.json(evaluationForms[idx]);
+});
+
+app.delete('/api/forms/:id', (req, res) => {
+  const idx = evaluationForms.findIndex(f => f.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Form not found' });
+    return;
+  }
+  const deleted = evaluationForms.splice(idx, 1)[0];
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'FORM_DELETED',
+    resourceId: req.params.id,
+    reason: `Removed evaluation form "${deleted.title}"`
+  });
+  res.json({ success: true });
+});
+
+app.post('/api/forms/:id/duplicate', (req, res) => {
+  const orig = evaluationForms.find(f => f.id === req.params.id);
+  if (!orig) {
+    res.status(404).json({ error: 'Form not found' });
+    return;
+  }
+  const cloned = {
+    ...orig,
+    id: `form-${Date.now()}`,
+    title: `${orig.title} (Copy)`,
+    status: 'draft',
+    version: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  evaluationForms.unshift(cloned);
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'FORM_DUPLICATED',
+    resourceId: cloned.id,
+    reason: `Cloned template from "${orig.title}"`
+  });
+  res.status(201).json(cloned);
+});
+
+// ==========================================
+// SURVEY MANAGEMENT DATA & ENDPOINTS
+// ==========================================
+let surveys: any[] = [
+  {
+    id: 'survey-001',
+    title: 'Community Needs Assessment & Tech Readiness Survey 2026',
+    description: 'Annual stakeholder survey assessing digital literacy, solar adoption, and internet connectivity among Hinunangan coastal communities.',
+    instructions: 'Responses may be submitted anonymously to protect beneficiary privacy under RA 10173.',
+    status: 'published',
+    isAnonymous: true,
+    targetAudience: 'Barangay Captains, Fisherfolk Leaders & Rural Women',
+    startDate: '2026-01-10',
+    endDate: '2026-06-30',
+    createdAt: '2026-01-08T10:00:00Z',
+    questions: [
+      {
+        id: 'sq-1',
+        title: 'Priority Skills Needed by Your Household / Barangay',
+        description: 'Which extension skills would deliver the highest economic benefit?',
+        type: 'multiple_choice',
+        required: true,
+        options: ['Digital E-Commerce & GCash', 'Mud Crab & Aquaculture', 'Food Processing & Packaging', 'Solar & Renewable Maintenance', 'Disaster First Aid & Early Warning']
+      },
+      {
+        id: 'sq-2',
+        title: 'Household Internet & Mobile Connectivity Status',
+        description: 'Rate the reliability of cellular network in your barangay',
+        type: 'rating_scale',
+        required: true
+      },
+      {
+        id: 'sq-3',
+        title: 'Preferred Extension Training Schedule',
+        description: 'What days of the week work best for community workshops?',
+        type: 'single_choice',
+        required: true,
+        options: ['Saturday Mornings', 'Sunday Afternoons', 'Weekday Evenings (5:00 PM)', 'Flexible Modular']
+      },
+      {
+        id: 'sq-4',
+        title: 'Additional Community Suggestions for SLSU Faculty',
+        description: 'Share any localized challenges or equipment requests',
+        type: 'text',
+        required: false
+      }
+    ]
+  },
+  {
+    id: 'survey-002',
+    title: 'Agricultural Cooperative Training Preferences Survey',
+    description: 'Consultation with local coconut farmers and rice growers for modern mechanization and organic fertilizer transfer.',
+    instructions: 'Please answer frankly on behalf of your cooperative members.',
+    status: 'published',
+    isAnonymous: false,
+    targetAudience: 'Registered Agri-Cooperatives in Southern Leyte',
+    startDate: '2026-02-01',
+    endDate: '2026-07-15',
+    createdAt: '2026-01-28T14:00:00Z',
+    questions: [
+      {
+        id: 'sq-c1',
+        title: 'Interest in Smart Irrigation & Soil Testing Kits',
+        type: 'rating_scale',
+        required: true
+      },
+      {
+        id: 'sq-c2',
+        title: 'Primary Hurdle Confronting Your Farm Operation',
+        type: 'single_choice',
+        required: true,
+        options: ['High Cost of Commercial Fertilizers', 'Lack of Cold Storage Logistics', 'Fluctuating Copra Gate Prices', 'Pest Outbreaks']
+      }
+    ]
+  }
+];
+
+let surveyResponses: any[] = [
+  {
+    id: 'sr-001',
+    surveyId: 'survey-001',
+    isAnonymous: true,
+    answers: {
+      'sq-1': ['Digital E-Commerce & GCash', 'Food Processing & Packaging'],
+      'sq-2': 4,
+      'sq-3': 'Saturday Mornings',
+      'sq-4': 'Please bring hands-on coconut oil vacuum sealers for demonstration.'
+    },
+    submittedAt: '2026-03-15T09:30:00Z'
+  },
+  {
+    id: 'sr-002',
+    surveyId: 'survey-001',
+    isAnonymous: true,
+    answers: {
+      'sq-1': ['Mud Crab & Aquaculture', 'Solar & Renewable Maintenance'],
+      'sq-2': 3,
+      'sq-3': 'Saturday Mornings',
+      'sq-4': 'More field visits to Barangay Ingan mangrove areas.'
+    },
+    submittedAt: '2026-03-22T14:15:00Z'
+  },
+  {
+    id: 'sr-003',
+    surveyId: 'survey-002',
+    isAnonymous: false,
+    respondentName: 'Vicente B. Alipoyo',
+    respondentEmail: 'vicente.alipoyo@gmail.com',
+    answers: {
+      'sq-c1': 5,
+      'sq-c2': 'High Cost of Commercial Fertilizers'
+    },
+    submittedAt: '2026-03-25T11:00:00Z'
+  }
+];
+
+// Survey endpoints
+app.get('/api/surveys', (_req, res) => {
+  const enhanced = surveys.map(s => {
+    const respCount = surveyResponses.filter(r => r.surveyId === s.id).length;
+    return { ...s, responsesCount: respCount };
+  });
+  res.json(enhanced);
+});
+
+app.post('/api/surveys', (req, res) => {
+  const newSurvey = {
+    id: `survey-${Date.now()}`,
+    title: req.body.title || 'Untitled Stakeholder Survey',
+    description: req.body.description || '',
+    instructions: req.body.instructions || '',
+    status: req.body.status || 'draft',
+    isAnonymous: req.body.isAnonymous !== undefined ? req.body.isAnonymous : true,
+    targetAudience: req.body.targetAudience || 'Community Beneficiaries',
+    startDate: req.body.startDate || new Date().toISOString().split('T')[0],
+    endDate: req.body.endDate || new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
+    questions: req.body.questions || [],
+    createdAt: new Date().toISOString()
+  };
+  surveys.unshift(newSurvey);
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'SURVEY_CREATED',
+    resourceId: newSurvey.id,
+    reason: `Registered stakeholder survey "${newSurvey.title}"`
+  });
+  res.status(201).json(newSurvey);
+});
+
+app.put('/api/surveys/:id', (req, res) => {
+  const idx = surveys.findIndex(s => s.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Survey not found' });
+    return;
+  }
+  surveys[idx] = { ...surveys[idx], ...req.body };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'SURVEY_UPDATED',
+    resourceId: req.params.id,
+    reason: `Updated survey configuration for "${surveys[idx].title}"`
+  });
+  res.json(surveys[idx]);
+});
+
+app.delete('/api/surveys/:id', (req, res) => {
+  const idx = surveys.findIndex(s => s.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Survey not found' });
+    return;
+  }
+  const deleted = surveys.splice(idx, 1)[0];
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'SURVEY_DELETED',
+    resourceId: req.params.id,
+    reason: `Archived/deleted survey "${deleted.title}"`
+  });
+  res.json({ success: true });
+});
+
+app.get('/api/surveys/:id/responses', (req, res) => {
+  const list = surveyResponses.filter(r => r.surveyId === req.params.id);
+  res.json(list);
+});
+
+app.post('/api/surveys/:id/responses', (req, res) => {
+  const survey = surveys.find(s => s.id === req.params.id);
+  if (!survey) {
+    res.status(404).json({ error: 'Survey not found' });
+    return;
+  }
+  const newResp = {
+    id: `sr-${Date.now()}`,
+    surveyId: req.params.id,
+    isAnonymous: survey.isAnonymous,
+    respondentName: survey.isAnonymous ? undefined : req.body.respondentName,
+    respondentEmail: survey.isAnonymous ? undefined : req.body.respondentEmail,
+    answers: req.body.answers || {},
+    submittedAt: new Date().toISOString()
+  };
+  surveyResponses.unshift(newResp);
+  res.status(201).json(newResp);
+});
+
+// ==========================================
+// WEBSITE THEME & APPEARANCE CUSTOMIZATION
+// ==========================================
+const DEFAULT_THEME = {
+  siteName: 'Southern Leyte State University',
+  siteTagline: 'Extension Services Evaluation System & Decision Support',
+  logoText: 'SLSU-Hinunangan',
+  primaryColor: '#022c22', // emerald-950
+  secondaryColor: '#065f46', // emerald-800
+  accentColor: '#d97706', // amber-600
+  pageBgColor: '#f8fafc', // slate-50
+  cardBgColor: '#ffffff',
+  sidebarBgColor: '#ffffff',
+  sidebarTextColor: '#1e293b',
+  sidebarLogoColor: '#d97706',
+  sidebarLogoBg: '#022c22',
+  sidebarLogoTextColor: '#1e293b',
+  sidebarLogoType: 'icon',
+  sidebarLogoUrl: '',
+  sidebarLogoIcon: 'building',
+  sidebarLogoShape: 'rounded',
+  sidebarLogoHistory: [
+    {
+      id: 'logo-hist-001',
+      sourceType: 'preset',
+      value: 'building',
+      name: 'SLSU Institutional Campus Landmark',
+      timestamp: '2026-05-10T08:00:00Z'
+    },
+    {
+      id: 'logo-hist-002',
+      sourceType: 'preset',
+      value: 'shield',
+      name: 'AACCUP Quality Assurance Shield',
+      timestamp: '2026-05-08T14:30:00Z'
+    },
+    {
+      id: 'logo-hist-003',
+      sourceType: 'preset',
+      value: 'graduation',
+      name: 'Academic Graduation Faculty Emblem',
+      timestamp: '2026-05-05T09:15:00Z'
+    }
+  ],
+  sidebarActiveItemBg: '#022c22',
+  sidebarActiveItemText: '#ffffff',
+  sidebarBorderColor: '#e2e8f0',
+  headerBgColor: '#022c22',
+  headerTextColor: '#ffffff',
+  buttonPrimaryBg: '#064e3b',
+  buttonPrimaryText: '#ffffff',
+  linkTextColor: '#065f46',
+  fontColorTitle: '#0f172a',
+  fontColorHeading: '#1e293b',
+  fontColorBody: '#334155',
+  fontColorMuted: '#64748b',
+  fontColorLabel: '#475569',
+  successColor: '#059669',
+  warningColor: '#d97706',
+  errorColor: '#dc2626',
+  themeMode: 'light',
+  typography: {
+    baseFontSize: 1.0,
+    pageTitleSize: 1.5,
+    sectionHeadingSize: 1.125,
+    bodyTextSize: 0.875,
+    labelSize: 0.75,
+    buttonTextSize: 0.75,
+    tableTextSize: 0.75,
+    navTextSize: 0.875,
+    metricNumberSize: 1.875,
+    smallTextSize: 0.6875,
+    pageTitleColor: '#0f172a',
+    sectionHeadingColor: '#1e293b',
+    bodyTextColor: '#334155',
+    mutedTextColor: '#64748b',
+    labelTextColor: '#475569'
+  }
+};
+
+let currentTheme = { ...DEFAULT_THEME };
+
+const isValidColor = (val: any) => typeof val === 'string' && (/^#([0-9a-fA-F]{3,8})$/.test(val) || /^rgb/.test(val));
+
+app.get('/api/theme', (_req, res) => {
+  res.json(currentTheme);
+});
+
+app.post('/api/theme', (req, res) => {
+  // Authorization check: Only administrators can modify global appearance & typography
+  const userRole = req.headers['x-user-role'];
+  if (userRole === 'participant') {
+    return res.status(403).json({ error: 'Unauthorized: Only system administrators may modify global typography and theme settings.' });
+  }
+
+  // Validate typography bounds and font colors if provided
+  if (req.body.typography) {
+    const typo = req.body.typography;
+    const validatedTypo = {
+      baseFontSize: Math.max(0.75, Math.min(1.35, Number(typo.baseFontSize) || 1.0)),
+      pageTitleSize: Math.max(1.15, Math.min(2.5, Number(typo.pageTitleSize) || 1.5)),
+      sectionHeadingSize: Math.max(0.9, Math.min(1.8, Number(typo.sectionHeadingSize) || 1.125)),
+      bodyTextSize: Math.max(0.75, Math.min(1.25, Number(typo.bodyTextSize) || 0.875)),
+      labelSize: Math.max(0.65, Math.min(1.0, Number(typo.labelSize) || 0.75)),
+      buttonTextSize: Math.max(0.65, Math.min(1.1, Number(typo.buttonTextSize) || 0.75)),
+      tableTextSize: Math.max(0.65, Math.min(1.0, Number(typo.tableTextSize) || 0.75)),
+      navTextSize: Math.max(0.75, Math.min(1.25, Number(typo.navTextSize) || 0.875)),
+      metricNumberSize: Math.max(1.4, Math.min(2.6, Number(typo.metricNumberSize) || 1.875)),
+      smallTextSize: Math.max(0.6, Math.min(0.9, Number(typo.smallTextSize) || 0.6875)),
+      pageTitleColor: isValidColor(typo.pageTitleColor) ? typo.pageTitleColor : (currentTheme.typography?.pageTitleColor || '#0f172a'),
+      sectionHeadingColor: isValidColor(typo.sectionHeadingColor) ? typo.sectionHeadingColor : (currentTheme.typography?.sectionHeadingColor || '#1e293b'),
+      bodyTextColor: isValidColor(typo.bodyTextColor) ? typo.bodyTextColor : (currentTheme.typography?.bodyTextColor || '#334155'),
+      mutedTextColor: isValidColor(typo.mutedTextColor) ? typo.mutedTextColor : (currentTheme.typography?.mutedTextColor || '#64748b'),
+      labelTextColor: isValidColor(typo.labelTextColor) ? typo.labelTextColor : (currentTheme.typography?.labelTextColor || '#475569')
+    };
+    req.body.typography = validatedTypo;
+  }
+
+  // Validate root font color fields if provided
+  if (req.body.fontColorTitle && !isValidColor(req.body.fontColorTitle)) delete req.body.fontColorTitle;
+  if (req.body.fontColorHeading && !isValidColor(req.body.fontColorHeading)) delete req.body.fontColorHeading;
+  if (req.body.fontColorBody && !isValidColor(req.body.fontColorBody)) delete req.body.fontColorBody;
+  if (req.body.fontColorMuted && !isValidColor(req.body.fontColorMuted)) delete req.body.fontColorMuted;
+  if (req.body.fontColorLabel && !isValidColor(req.body.fontColorLabel)) delete req.body.fontColorLabel;
+
+  currentTheme = { 
+    ...currentTheme, 
+    ...req.body,
+    typography: req.body.typography || currentTheme.typography 
+  };
+
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: req.body.typography ? 'TYPOGRAPHY_AND_THEME_SAVED' : 'THEME_CUSTOMIZATION_SAVED',
+    resourceId: 'website_theme',
+    reason: `Applied customized brand typography & theme settings (Base: ${currentTheme.typography?.baseFontSize || 1}rem)`
+  });
+
+  res.json(currentTheme);
+});
+
+app.post('/api/theme/reset', (req, res) => {
+  const userRole = req.headers['x-user-role'];
+  if (userRole === 'participant') {
+    return res.status(403).json({ error: 'Unauthorized: Only system administrators may reset global typography and theme settings.' });
+  }
+
+  currentTheme = { ...DEFAULT_THEME };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'THEME_RESET_DEFAULT',
+    resourceId: 'website_theme',
+    reason: 'Restored default SLSU institutional brand palette & typography standards'
+  });
+  res.json(currentTheme);
+});
+
+// ==========================================
+// ADMIN COMPREHENSIVE SYSTEM METRICS ENDPOINT
+// ==========================================
+app.get('/api/admin/metrics', (_req, res) => {
+  const totalEvaluations = evaluations.length;
+  const overallSatisfactionMean = totalEvaluations > 0
+    ? Number((evaluations.reduce((a, b) => a + b.meanRating, 0) / totalEvaluations).toFixed(2))
+    : 0;
+
+  const totalTargetParticipants = activities.reduce((a, b) => a + (b.totalTargetParticipants || 0), 0);
+  const turnoutCompletionRate = totalTargetParticipants > 0
+    ? Math.min(100, Math.round((totalEvaluations / totalTargetParticipants) * 100))
+    : 85;
+
+  const metrics = {
+    totalUsers: users.length,
+    adminUsers: users.filter(u => u.role === 'admin').length,
+    participantUsers: users.filter(u => u.role === 'participant').length,
+    totalActivities: activities.length,
+    activeActivities: activities.filter(a => a.status === 'active').length,
+    completedActivities: activities.filter(a => a.status === 'completed').length,
+    upcomingActivities: activities.filter(a => a.status === 'upcoming').length,
+    draftActivities: activities.filter(a => a.status === 'draft').length,
+    totalSurveys: surveys.length,
+    publishedSurveys: surveys.filter(s => s.status === 'published').length,
+    totalSurveyResponses: surveyResponses.length,
+    totalEvaluations,
+    overallSatisfactionMean,
+    turnoutCompletionRate,
+    totalAuditEvents: auditLogs.length,
+    recentActivityFeed: auditLogs.slice(0, 10).map(l => ({
+      id: l.id,
+      action: l.action,
+      target: l.resourceId,
+      actor: l.adminName,
+      timestamp: l.timestamp
+    }))
+  };
+
+  res.json(metrics);
+});
+
+// ==========================================
+// ADDITIONAL ACTIVITY CRUD MANAGEMENT
+// ==========================================
+app.put('/api/activities/:id', (req, res) => {
+  const idx = activities.findIndex(a => a.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Activity not found' });
+    return;
+  }
+  activities[idx] = { ...activities[idx], ...req.body };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'ACTIVITY_UPDATED',
+    resourceId: req.params.id,
+    reason: `Updated details for activity "${activities[idx].title}"`
+  });
+  res.json(activities[idx]);
+});
+
+app.delete('/api/activities/:id', (req, res) => {
+  const idx = activities.findIndex(a => a.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Activity not found' });
+    return;
+  }
+  const deleted = activities.splice(idx, 1)[0];
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'ACTIVITY_ARCHIVED',
+    resourceId: req.params.id,
+    reason: `Archived activity "${deleted.title}"`
+  });
+  res.json({ success: true });
+});
+
+app.post('/api/activities/:id/duplicate', (req, res) => {
+  const orig = activities.find(a => a.id === req.params.id);
+  if (!orig) {
+    res.status(404).json({ error: 'Activity not found' });
+    return;
+  }
+  const cloned = {
+    ...orig,
+    id: `act-${Date.now()}`,
+    title: `${orig.title} (Cohort Copy)`,
+    status: 'draft',
+    date: new Date().toISOString().split('T')[0],
+    createdAt: new Date().toISOString()
+  };
+  activities.unshift(cloned as any);
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'ACTIVITY_DUPLICATED',
+    resourceId: cloned.id,
+    reason: `Duplicated activity template from "${orig.title}"`
+  });
+  res.status(201).json(cloned);
+});
+
+// ==========================================
+// USER ACCOUNTS & RECOVERY ENDPOINTS
+// ==========================================
+app.get('/api/users', (_req, res) => {
+  res.json(users);
+});
+
+app.post('/api/users', (req, res) => {
+  const newUser = {
+    id: `user-${Date.now()}`,
+    name: req.body.name || 'New User',
+    email: req.body.email || `user${Date.now()}@slsu.edu.ph`,
+    role: req.body.role || 'participant',
+    department: req.body.department || 'SLSU Hinunangan',
+    title: req.body.title || 'Participant',
+    status: req.body.status || 'active',
+    lastLogin: new Date().toISOString()
+  };
+  users.push(newUser as any);
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'USER_CREATED',
+    resourceId: newUser.id,
+    reason: `Created user account for ${newUser.name} (${newUser.role})`
+  });
+  res.status(201).json(newUser);
+});
+
+app.put('/api/users/:id', (req, res) => {
+  const idx = users.findIndex(u => u.id === req.params.id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  users[idx] = { ...users[idx], ...req.body };
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'USER_ROLE_STATUS_UPDATED',
+    resourceId: req.params.id,
+    reason: `Updated permissions/status for ${users[idx].name}`
+  });
+  res.json(users[idx]);
+});
+
+app.post('/api/users/:id/reset', (req, res) => {
+  const user = users.find(u => u.id === req.params.id);
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  auditLogs.unshift({
+    id: `log-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    adminName: 'Dr. Jane C. Monfort',
+    action: 'USER_SECURITY_CREDENTIAL_RESET',
+    resourceId: req.params.id,
+    reason: `Issued temporary credential reset token for ${user.email}`
+  });
+  res.json({ success: true, message: `Reset link dispatched to ${user.email}` });
+});
+
 
 // Vite Middleware Integration for SPA Full-Stack Dev Server
 async function startServer() {
